@@ -1863,7 +1863,7 @@ func TestWaitOnApplicationStatus_JSON_YAML_WideOutput(t *testing.T) {
 
 	output, err := captureOutput(
 		func() error {
-			_, _, _ = waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, selectResource, "json")
+			_, _, _ = waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, selectResource, "json", defaultMaxPendingResources)
 			return nil
 		},
 	)
@@ -1871,7 +1871,7 @@ func TestWaitOnApplicationStatus_JSON_YAML_WideOutput(t *testing.T) {
 	assert.True(t, json.Valid([]byte(output)))
 
 	output, err = captureOutput(func() error {
-		_, _, _ = waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, selectResource, "yaml")
+		_, _, _ = waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, selectResource, "yaml", defaultMaxPendingResources)
 		return nil
 	})
 
@@ -1880,7 +1880,7 @@ func TestWaitOnApplicationStatus_JSON_YAML_WideOutput(t *testing.T) {
 	require.NoError(t, err)
 
 	output, _ = captureOutput(func() error {
-		_, _, _ = waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, selectResource, "")
+		_, _, _ = waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, selectResource, "", defaultMaxPendingResources)
 		return nil
 	})
 	timeStr := time.Now().Format("2006-01-02T15:04:05-07:00")
@@ -1949,7 +1949,7 @@ func TestWaitOnApplicationStatus_JSON_YAML_WideOutput_With_Timeout(t *testing.T)
 	watch = getWatchOpts(watch)
 
 	output, _ := captureOutput(func() error {
-		_, _, _ = waitOnApplicationStatus(ctx, acdClient, "app-name", 5, watch, selectResource, "")
+		_, _, _ = waitOnApplicationStatus(ctx, acdClient, "app-name", 5, watch, selectResource, "", defaultMaxPendingResources)
 		return nil
 	})
 	timeStr := time.Now().Format("2006-01-02T15:04:05-07:00")
@@ -2157,7 +2157,7 @@ func TestWaitOnApplicationStatus_ReturnsImmediatelyWhenAlreadyInDesiredState(t *
 	}
 
 	start := time.Now()
-	_, _, err := waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, selectResource, "json")
+	_, _, err := waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, selectResource, "json", defaultMaxPendingResources)
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
@@ -2173,7 +2173,7 @@ func TestWaitOnApplicationStatus_DeleteWatchSkipsEarlyReturn(t *testing.T) {
 	ctx := t.Context()
 	watch := watchOpts{delete: true}
 
-	app, opState, err := waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, nil, "")
+	app, opState, err := waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, nil, "", defaultMaxPendingResources)
 	require.NoError(t, err)
 	assert.Nil(t, app)
 	assert.Nil(t, opState)
@@ -2188,7 +2188,7 @@ func TestWaitOnApplicationStatus_ReturnsFromWatchLoopWhenEventSatisfiesCondition
 	ctx := t.Context()
 	watch := watchOpts{sync: true, health: true}
 
-	app, _, err := waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, nil, "json")
+	app, _, err := waitOnApplicationStatus(ctx, acdClient, "app-name", 0, watch, nil, "json", defaultMaxPendingResources)
 	require.NoError(t, err)
 	// The function returns via the readiness path inside the watch loop.
 	// The returned app may be re-fetched by printFinalStatus so we only
@@ -2399,7 +2399,7 @@ func TestWaitOnApplicationStatus_TimeoutErrorListsPendingResources(t *testing.T)
 	acdClient := newStatusAcdClient(pendingAppStatus())
 	watch := getWatchOpts(watchOpts{sync: true, health: true})
 
-	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, nil, "wide")
+	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, nil, "wide", defaultMaxPendingResources)
 	require.Error(t, err)
 	errMsg := err.Error()
 	assert.Contains(t, errMsg, "timed out")
@@ -2417,7 +2417,7 @@ func TestWaitOnApplicationStatus_TimeoutErrorSelectedResources(t *testing.T) {
 	}
 	watch := getWatchOpts(watchOpts{sync: true, health: true})
 
-	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, selected, "wide")
+	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, selected, "wide", defaultMaxPendingResources)
 	require.Error(t, err)
 	errMsg := err.Error()
 	assert.Contains(t, errMsg, "resources not ready: apps/Deployment/prod/api (sync: OutOfSync, health: Degraded)")
@@ -2431,7 +2431,7 @@ func TestWaitOnApplicationStatus_TimeoutErrorAppLevelWithoutPendingResources(t *
 	acdClient := newStatusAcdClient(aggregateOnlyAppStatus())
 	watch := getWatchOpts(watchOpts{sync: true})
 
-	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, nil, "wide")
+	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, nil, "wide", defaultMaxPendingResources)
 	require.Error(t, err)
 	errMsg := err.Error()
 	assert.Contains(t, errMsg, "app sync status: OutOfSync")
@@ -2447,7 +2447,7 @@ func TestWaitOnApplicationStatus_TimeoutErrorOnlyReportsWatchedConditions(t *tes
 	// Give the app an in-flight operation so the operation wait is unmet.
 	watch := watchOpts{operation: true}
 
-	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, nil, "wide")
+	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, nil, "wide", defaultMaxPendingResources)
 	require.Error(t, err)
 	errMsg := err.Error()
 	assert.Contains(t, errMsg, "timed out")
@@ -2478,7 +2478,7 @@ func TestWaitOnApplicationStatus_TimeoutErrorSkipsCompletedHooks(t *testing.T) {
 	acdClient := newStatusAcdClient(status)
 	watch := getWatchOpts(watchOpts{sync: true})
 
-	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, nil, "wide")
+	_, _, err := waitOnApplicationStatus(t.Context(), acdClient, "app-name", 0, watch, nil, "wide", defaultMaxPendingResources)
 	require.Error(t, err)
 	errMsg := err.Error()
 	assert.Contains(t, errMsg, "timed out")
@@ -2488,35 +2488,52 @@ func TestWaitOnApplicationStatus_TimeoutErrorSkipsCompletedHooks(t *testing.T) {
 
 func TestFormatPendingResources(t *testing.T) {
 	tests := []struct {
-		name     string
-		pending  []string
-		expected string
+		name       string
+		pending    []string
+		maxPending int
+		expected   string
 	}{
 		{
-			name:     "empty",
-			pending:  nil,
-			expected: "",
+			name:       "empty",
+			pending:    nil,
+			maxPending: defaultMaxPendingResources,
+			expected:   "",
 		},
 		{
-			name:     "single resource",
-			pending:  []string{"apps/Deployment/prod/api (sync: OutOfSync, health: Degraded)"},
-			expected: "apps/Deployment/prod/api (sync: OutOfSync, health: Degraded)",
+			name:       "single resource",
+			pending:    []string{"apps/Deployment/prod/api (sync: OutOfSync, health: Degraded)"},
+			maxPending: defaultMaxPendingResources,
+			expected:   "apps/Deployment/prod/api (sync: OutOfSync, health: Degraded)",
 		},
 		{
-			name:     "exactly ten resources",
-			pending:  makePendingResources(10),
-			expected: strings.Join(makePendingResources(10), ", "),
+			name:       "exactly ten resources",
+			pending:    makePendingResources(10),
+			maxPending: defaultMaxPendingResources,
+			expected:   strings.Join(makePendingResources(10), ", "),
 		},
 		{
 			name:     "more than ten resources",
 			pending:  makePendingResources(13),
+			maxPending: defaultMaxPendingResources,
 			expected: strings.Join(makePendingResources(10), ", ") + ", ... and 3 more",
+		},
+		{
+			name:       "custom limit truncates",
+			pending:    makePendingResources(6),
+			maxPending: 3,
+			expected:   strings.Join(makePendingResources(3), ", ") + ", ... and 3 more",
+		},
+		{
+			name:       "zero limit means unlimited",
+			pending:    makePendingResources(13),
+			maxPending: 0,
+			expected:   strings.Join(makePendingResources(13), ", "),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, formatPendingResources(tt.pending))
+			assert.Equal(t, tt.expected, formatPendingResources(tt.pending, tt.maxPending))
 		})
 	}
 }

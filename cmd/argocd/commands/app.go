@@ -1586,12 +1586,13 @@ func getWatchOpts(watch watchOpts) watchOpts {
 // NewApplicationWaitCommand returns a new instance of an `argocd app wait` command
 func NewApplicationWaitCommand(clientOpts *argocdclient.ClientOptions) *cobra.Command {
 	var (
-		watch        watchOpts
-		timeout      uint
-		selector     string
-		resources    []string
-		output       string
-		appNamespace string
+		watch               watchOpts
+		timeout             uint
+		selector            string
+		resources           []string
+		output              string
+		appNamespace        string
+		maxPendingResources int
 	)
 	command := &cobra.Command{
 		Use:   "wait [APPNAME.. | -l selector]",
@@ -1644,7 +1645,7 @@ func NewApplicationWaitCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 				if appNamespace != "" && !strings.Contains(appName, "/") {
 					appName = appNamespace + "/" + appName
 				}
-				_, _, err := waitOnApplicationStatus(ctx, acdClient, appName, timeout, watch, selectedResources, output)
+				_, _, err := waitOnApplicationStatus(ctx, acdClient, appName, timeout, watch, selectedResources, output, maxPendingResources)
 				if err != nil {
 					if isContextCanceledErr(err) {
 						log.Fatalf("timed out (%ds) waiting for app %q to match the expected conditions", timeout, appName)
@@ -1666,6 +1667,7 @@ func NewApplicationWaitCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 	command.Flags().UintVar(&timeout, "timeout", defaultCheckTimeoutSeconds, "Time out after this many seconds")
 	command.Flags().StringVarP(&appNamespace, "app-namespace", "N", "", "Only wait for an application  in namespace")
 	command.Flags().StringVarP(&output, "output", "o", "wide", "Output format. One of: json|yaml|wide|tree|tree=detailed")
+	command.Flags().IntVar(&maxPendingResources, "max-pending-resources", defaultMaxPendingResources, "Maximum number of not-ready resources listed in the wait timeout error (0 for unlimited)")
 	return command
 }
 
@@ -1730,6 +1732,7 @@ func NewApplicationSyncCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 		ignoreNormalizerOpts      normalizers.IgnoreNormalizerOpts
 		serverSideDiffConcurrency int
 		serverSideDiffMaxBatchKB  int
+		maxPendingResources       int
 	)
 	command := &cobra.Command{
 		Use:   "sync [APPNAME... | -l selector | --project project-name]",
@@ -2038,7 +2041,7 @@ func NewApplicationSyncCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 				errors.CheckError(err)
 
 				if !async {
-					app, opState, err := waitOnApplicationStatus(ctx, acdClient, appQualifiedName, timeout, watchOpts{operation: true}, selectedResources, output)
+					app, opState, err := waitOnApplicationStatus(ctx, acdClient, appQualifiedName, timeout, watchOpts{operation: true}, selectedResources, output, maxPendingResources)
 					errors.CheckError(err)
 
 					if !dryRun {
@@ -2063,6 +2066,7 @@ func NewApplicationSyncCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 	command.Flags().StringVarP(&selector, "selector", "l", "", "Sync apps that match this label. Supports '=', '==', '!=', in, notin, exists & not exists. Matching apps must satisfy all of the specified label constraints.")
 	command.Flags().StringArrayVar(&labels, "label", []string{}, "Sync only specific resources with a label. This option may be specified repeatedly.")
 	command.Flags().UintVar(&timeout, "timeout", defaultCheckTimeoutSeconds, "Time out after this many seconds")
+	command.Flags().IntVar(&maxPendingResources, "max-pending-resources", defaultMaxPendingResources, "Maximum number of not-ready resources listed in the wait timeout error (0 for unlimited)")
 	command.Flags().Int64Var(&retryLimit, "retry-limit", 0, "Max number of allowed sync retries")
 	command.Flags().BoolVar(&retryRefresh, "retry-refresh", false, "Indicates if the latest revision should be used on retry instead of the initial one")
 	command.Flags().DurationVar(&retryBackoffDuration, "retry-backoff-duration", argoappv1.DefaultSyncRetryDuration, "Retry backoff base duration. Input needs to be a duration (e.g. 2m, 1h)")
@@ -2347,7 +2351,7 @@ func checkAppWaitConditions(app *argoappv1.Application, watch watchOpts, selecte
 // waitOnApplicationStatus watches an application and blocks until either the desired watch conditions
 // are fulfilled or we reach the timeout. Returns the app once desired conditions have been filled.
 // Additionally return the operationState at time of fulfilment (which may be different than returned app).
-func waitOnApplicationStatus(ctx context.Context, acdClient argocdclient.Client, appName string, timeout uint, watch watchOpts, selectedResources []*argoappv1.SyncOperationResource, output string) (*argoappv1.Application, *argoappv1.OperationState, error) {
+func waitOnApplicationStatus(ctx context.Context, acdClient argocdclient.Client, appName string, timeout uint, watch watchOpts, selectedResources []*argoappv1.SyncOperationResource, output string, maxPendingResources int) (*argoappv1.Application, *argoappv1.OperationState, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -2544,7 +2548,7 @@ func waitOnApplicationStatus(ctx context.Context, acdClient argocdclient.Client,
 			}
 		}
 		if len(pending) > 0 {
-			return nil, finalOperationState, fmt.Errorf("timed out (%ds) waiting for app %q to match desired state. resources not ready: %s", timeout, appName, formatPendingResources(pending))
+			return nil, finalOperationState, fmt.Errorf("timed out (%ds) waiting for app %q to match desired state. resources not ready: %s", timeout, appName, formatPendingResources(pending, maxPendingResources))
 		}
 		return nil, finalOperationState, fmt.Errorf("timed out (%ds) waiting for app %q to match desired state", timeout, appName)
 	}
@@ -2581,7 +2585,7 @@ func waitOnApplicationStatus(ctx context.Context, acdClient argocdclient.Client,
 		}
 	}
 	if len(pending) > 0 {
-		detail += ", resources not ready: " + formatPendingResources(pending)
+		detail += ", resources not ready: " + formatPendingResources(pending, maxPendingResources)
 	}
 	return nil, finalOperationState, fmt.Errorf("timed out (%ds) waiting for app %q to match desired state. %s", timeout, appName, detail)
 }
@@ -2600,10 +2604,8 @@ func appHydrationFinished(app *argoappv1.Application) bool {
 // formatPendingResources builds a summary string for resources that have not
 // reached the desired state. If there are more than maxPending entries the
 // list is truncated and a count of the remaining items is appended.
-func formatPendingResources(pending []string) string {
-	// TODO(#29031): make the limit configurable via a command flag
-	const maxPending = 10
-	if len(pending) > maxPending {
+func formatPendingResources(pending []string, maxPending int) string {
+	if maxPending > 0 && len(pending) > maxPending {
 		return strings.Join(pending[:maxPending], ", ") + fmt.Sprintf(", ... and %d more", len(pending)-maxPending)
 	}
 	return strings.Join(pending, ", ")
@@ -2779,10 +2781,11 @@ func findRevisionHistory(application *argoappv1.Application, historyId int64) (*
 // NewApplicationRollbackCommand returns a new instance of an `argocd app rollback` command
 func NewApplicationRollbackCommand(clientOpts *argocdclient.ClientOptions) *cobra.Command {
 	var (
-		prune        bool
-		timeout      uint
-		output       string
-		appNamespace string
+		prune               bool
+		timeout             uint
+		output              string
+		appNamespace        string
+		maxPendingResources int
 	)
 	command := &cobra.Command{
 		Use:   "rollback APPNAME [ID]",
@@ -2822,12 +2825,13 @@ func NewApplicationRollbackCommand(clientOpts *argocdclient.ClientOptions) *cobr
 
 			_, _, err = waitOnApplicationStatus(ctx, acdClient, app.QualifiedName(), timeout, watchOpts{
 				operation: true,
-			}, nil, output)
+			}, nil, output, maxPendingResources)
 			errors.CheckError(err)
 		},
 	}
 	command.Flags().BoolVar(&prune, "prune", false, "Allow deleting unexpected resources")
 	command.Flags().UintVar(&timeout, "timeout", defaultCheckTimeoutSeconds, "Time out after this many seconds")
+	command.Flags().IntVar(&maxPendingResources, "max-pending-resources", defaultMaxPendingResources, "Maximum number of not-ready resources listed in the wait timeout error (0 for unlimited)")
 	command.Flags().StringVarP(&output, "output", "o", "wide", "Output format. One of: json|yaml|wide|tree|tree=detailed")
 	command.Flags().StringVarP(&appNamespace, "app-namespace", "N", "", "Rollback application in namespace")
 	return command
@@ -2836,6 +2840,7 @@ func NewApplicationRollbackCommand(clientOpts *argocdclient.ClientOptions) *cobr
 const (
 	printOpFmtStr              = "%-20s%s\n"
 	defaultCheckTimeoutSeconds = 0
+	defaultMaxPendingResources = 10
 )
 
 func printOperationResult(opState *argoappv1.OperationState) {
