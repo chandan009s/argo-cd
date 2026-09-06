@@ -72,6 +72,7 @@ type fakeData struct {
 	apps                            []runtime.Object
 	manifestResponse                *apiclient.ManifestResponse
 	manifestResponses               []*apiclient.ManifestResponse
+	manifestErr                     error
 	managedLiveObjs                 map[kube.ResourceKey]*unstructured.Unstructured
 	namespacedResources             map[kube.ResourceKey]namespacedResource
 	configMapData                   map[string]string
@@ -147,20 +148,25 @@ func newFakeControllerWithResync(ctx context.Context, data *fakeData, appResyncP
 		}
 	}
 
+	manifestErr := data.manifestErr
+	if manifestErr == nil {
+		manifestErr = repoErr
+	}
+
 	if len(data.manifestResponses) > 0 {
 		for _, response := range data.manifestResponses {
-			if repoErr != nil {
-				mockRepoClient.EXPECT().GenerateManifest(mock.Anything, mock.Anything).Run(captureRun).Return(response, repoErr).Once()
-			} else {
-				mockRepoClient.EXPECT().GenerateManifest(mock.Anything, mock.Anything).Run(captureRun).Return(response, nil).Once()
-			}
+			mockRepoClient.EXPECT().
+				GenerateManifest(mock.Anything, mock.Anything).
+				Run(captureRun).
+				Return(response, manifestErr).
+				Once()
 		}
-	} else {
-		if repoErr != nil {
-			mockRepoClient.EXPECT().GenerateManifest(mock.Anything, mock.Anything).Run(captureRun).Return(data.manifestResponse, repoErr).Once()
-		} else if data.manifestResponse != nil {
-			mockRepoClient.EXPECT().GenerateManifest(mock.Anything, mock.Anything).Run(captureRun).Return(data.manifestResponse, nil).Once()
-		}
+	} else if data.manifestResponse != nil || manifestErr != nil {
+		mockRepoClient.EXPECT().
+			GenerateManifest(mock.Anything, mock.Anything).
+			Run(captureRun).
+			Return(data.manifestResponse, manifestErr).
+			Once()
 	}
 
 	if len(data.updateRevisionForPathsResponses) > 0 {
@@ -187,6 +193,8 @@ func newFakeControllerWithResync(ctx context.Context, data *fakeData, appResyncP
 				mockRepoClient.EXPECT().ResolveRevision(mock.Anything, mock.Anything).Return(response, nil)
 			}
 		}
+	} else {
+		mockRepoClient.EXPECT().ResolveRevision(mock.Anything, mock.Anything).Return(nil, repoErr).Maybe()
 	}
 
 	mockRepoClientset := &mockrepoclient.Clientset{RepoServerServiceClient: mockRepoClient}

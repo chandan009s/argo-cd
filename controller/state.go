@@ -419,6 +419,16 @@ func (m *appStateManager) GetRepoObjs(ctx context.Context, app *v1alpha1.Applica
 				InstallationID:                  installationID,
 			})
 			if err != nil {
+				if resp, resolveErr := repoClient.ResolveRevision(srcCtx, &apiclient.ResolveRevisionRequest{
+					Repo:              repo,
+					App:               app,
+					AmbiguousRevision: revision,
+					SourceIndex:       int64(i),
+					NoRevisionCache:   noRevisionCache,
+				}); resolveErr == nil && resp != nil && resp.Revision != "" {
+					revisions[i] = resp.Revision
+				}
+
 				genErr := fmt.Errorf("failed to generate manifest for source %d of %d: %w", i+1, len(sources), err)
 				if app.Spec.SourceHydrator != nil && app.Spec.SourceHydrator.HydrateTo != nil && strings.Contains(err.Error(), path.ErrMessageAppPathDoesNotExist) {
 					genErr = fmt.Errorf("%w - waiting for an external process to update %s from %s", genErr, app.Spec.SourceHydrator.SyncSource.TargetBranch, app.Spec.SourceHydrator.HydrateTo.TargetBranch)
@@ -747,6 +757,11 @@ func (m *appStateManager) CompareAppState(ctx context.Context, app *v1alpha1.App
 		targetObjs, manifestInfos, revisionsMayHaveChanges, err = m.GetRepoObjs(ctx, app, sources, appLabelKey, revisions, noCache, noRevisionCache, project.EffectiveSourceIntegrity(), project, true)
 		if err != nil {
 			targetObjs = make([]*unstructured.Unstructured, 0)
+			if hasMultipleSources {
+				syncStatus.Revisions = revisions
+			} else if len(revisions) > 0 {
+				syncStatus.Revision = revisions[0]
+			}
 			msg := "Failed to load target state: " + err.Error()
 			conditions = append(conditions, v1alpha1.ApplicationCondition{Type: v1alpha1.ApplicationConditionComparisonError, Message: msg, LastTransitionTime: &now})
 			if firstSeen, ok := m.repoErrorCache.Load(app.Name); ok {
@@ -1111,10 +1126,12 @@ func (m *appStateManager) CompareAppState(ctx context.Context, app *v1alpha1.App
 	syncStatus.Status = syncCode
 
 	// Update the initial revision to the resolved manifest SHA
-	if hasMultipleSources {
-		syncStatus.Revisions = manifestRevisions
-	} else if len(manifestRevisions) > 0 {
-		syncStatus.Revision = manifestRevisions[0]
+	if !failedToLoadObjs {
+		if hasMultipleSources {
+			syncStatus.Revisions = manifestRevisions
+		} else if len(manifestRevisions) > 0 {
+			syncStatus.Revision = manifestRevisions[0]
+		}
 	}
 
 	ts.AddCheckpoint("sync_ms")
